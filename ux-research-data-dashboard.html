@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>UX 리서치 태깅 대시보드</title>
+<script src="https://cdn.tailwindcss.com/3.4.17"></script>
+<script>tailwind.config={theme:{extend:{colors:{bg:'var(--bg)',card:'var(--card)',ink:'var(--ink)',mut:'var(--mut)',line:'var(--line)'}}}}</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.3.1/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.3.1/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/htm@3.1.1/dist/htm.umd.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+:root{--bg:#f8fafc;--card:#fff;--ink:#0f172a;--mut:#64748b;--line:#e2e8f0;--hl:#FEE500;color-scheme:light dark;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media(prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1120;--card:#141c2f;--ink:#e8edf6;--mut:#94a3b8;--line:#26314a}}
+:root[data-theme="dark"]{--bg:#0b1120;--card:#141c2f;--ink:#e8edf6;--mut:#94a3b8;--line:#26314a}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{background:var(--bg);color:var(--ink);font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Noto Sans KR","Malgun Gothic",sans-serif;margin:0}
+mark{background:var(--hl);color:#111;padding:0 3px;border-radius:3px}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+const {useState,useMemo,useRef}=React;
+const html=htm.bind(React.createElement);
+
+/* ── 분류 규칙 (가이드: 카카오페이 UX 태깅 + 시스템/성능 포함) ── */
+const CATS=[
+ {k:'인증/보안',kw:['인증','지문','얼굴','생체','비밀번호','비번','패턴','보안','해킹','OTP','본인','명의'],cls:'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300',hex:'#6366f1'},
+ {k:'시스템/성능',kw:['느려','느린','로딩','멈','튕','오류','에러','먹통','끊겨','지연','렉'],cls:'bg-rose-500/15 text-rose-700 dark:text-rose-300',hex:'#f43f5e'},
+ {k:'수수료/혜택',kw:['수수료','포인트','적립','혜택','쿠폰','캐시백','무료','이자','할인'],cls:'bg-amber-500/20 text-amber-700 dark:text-amber-300',hex:'#f59e0b'},
+ {k:'동선/절차',kw:['찾','메뉴','단계','뒤로','어디','절차','번거','눌러','탭','한도'],cls:'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',hex:'#10b981'},
+ {k:'화면 가독성',kw:['글씨','글자','작아','작은','버튼','배너','광고','프로모션','가독','색','다크모드','그래프','디자인','정신이'],cls:'bg-sky-500/15 text-sky-700 dark:text-sky-300',hex:'#0ea5e9'},
+ {k:'기타',kw:[],cls:'bg-slate-500/15 text-slate-600 dark:text-slate-300',hex:'#94a3b8'}];
+const CAT=Object.fromEntries(CATS.map(c=>[c.k,c]));
+const SEV={High:{cls:'bg-red-500/15 text-red-700 dark:text-red-300',hex:'#ef4444'},Mid:{cls:'bg-amber-500/20 text-amber-700 dark:text-amber-300',hex:'#f59e0b'},Low:{cls:'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',hex:'#10b981'}};
+const SENT={'부정':{cls:'bg-rose-500/15 text-rose-700 dark:text-rose-300',hex:'#f43f5e'},'중립':{cls:'bg-slate-500/15 text-slate-600 dark:text-slate-300',hex:'#94a3b8'},'긍정':{cls:'bg-emerald-500/15 text-emerald-700 dark:text-emerald-300',hex:'#10b981'}};
+const SL={High:'이탈',Mid:'우회',Low:'지장 없음'};
+const HI=['못했','못해','실패','포기','안 됐','안됐','안 돼','안돼','튕','멈춰','사라','불안','날렸','이탈','취소했','취소됐','진행이 안'];
+const MID=['헷갈','혼란','어렵','찾느라','불편','복잡','번거','느려','느린','모르겠','몰라','당황','머뭇','기다렸','정신이','피곤','걱정'];
+const POS=['좋','편해','편하','만족','간편','최고','감사','예쁘','쉬워','쉽'];
+const ALLKW=[...CATS.flatMap(c=>c.kw),...HI,...MID,...POS];
+const has=(t,a)=>a.reduce((n,k)=>n+(t.includes(k)?1:0),0);
+
+/* ── 개인정보 마스킹 ── */
+const mName=n=>n[0]+'*'+n.slice(2);
+function mask(t){
+ return t
+ .replace(/([가-힣]{3})(?=\s?(님|씨|고객))/g,mName)
+ .replace(/01[016789]-?\d{3,4}-?\d{4}/g,'010-****-****')
+ .replace(/\b(\d{3,6})-\d{2,6}-\d{3,8}(-\d{1,3})?\b/g,'$1-***-****')
+ .replace(/\b\d{11,14}\b/g,'***-****-****')
+ .replace(/(\d[\d,]*(?:\.\d+)?)\s?(억|만\s?원|만|원)/g,(m,n,u)=>{
+   const v=parseFloat(n.replace(/,/g,''))*(u==='억'?1e8:u==='원'?1:1e4);
+   return v>=1e6?'[금액 비식별]':m});
+}
+function pickQuote(t){
+ const s=t.split(/(?<=[.!?。])\s+|\n+/).filter(Boolean);
+ let b=s[0]||t,bs=-1;
+ for(const x of s){const sc=has(x,ALLKW)+has(x,HI)*2;if(sc>bs){bs=sc;b=x}}
+ return b.trim();
+}
+function tag(raw,id,src){
+ const masked=mask(String(raw).trim());
+ let cat='기타',best=0;
+ for(const c of CATS){const n=has(masked,c.kw);if(n>best){best=n;cat=c.k}}
+ const sev=has(masked,HI)?'High':has(masked,MID)?'Mid':'Low';
+ const sent=sev!=='Low'?'부정':has(masked,POS)?'긍정':'중립';
+ return {id,source:src||'',masked,category:cat,sentiment:sent,severity:sev,verbatim:pickQuote(masked)};
+}
+
+/* ── 샘플 데이터 ── */
+const SAMPLE=[
+"홍길동님 계좌 110-234-567890으로 송금하려는데 지문인증이 계속 실패해서 결국 송금을 못했어요. 급한 돈이었는데 너무 불안했습니다.",
+"비밀번호를 세 번 틀렸더니 본인인증 문자가 한참 안 와서 기다렸어요. 결제하려다 머뭇거렸네요.",
+"송금 화면에서 버튼이 너무 작아서 자꾸 다른 걸 눌러요. 글씨도 작아서 불편합니다.",
+"메인 화면에 프로모션 배너가 너무 많아서 정신이 없어요. 원하는 메뉴를 찾느라 헷갈렸어요.",
+"수수료가 얼마인지 송금 전에 안내가 없어서 당황했어요. 500만원 보냈는데 수수료가 나가더라고요.",
+"페이포인트 적립 조건이 불명확해요. 어떤 결제에 쌓이는지 모르겠습니다.",
+"송금하다가 앱이 튕겨서 돈이 나갔는지 확인도 못했어요. 정말 불안했어요.",
+"자산 탭에서 내 계좌 내역 보려면 단계가 너무 많아요. 뒤로가기 누르면 처음으로 돌아가서 번거롭습니다.",
+"얼굴 인식으로 바뀌어서 정말 편해요. 만족합니다.",
+"로딩이 너무 느려서 결제 중간에 취소했습니다. 박민수 고객님 명의 카드인데도 오류가 났어요.",
+"혜택 탭 디자인이 예쁘고 쿠폰 찾기 쉬워서 좋아요.",
+"송금 확인 화면 글자 색이 연해서 잘 안 보여요. 다크모드를 지원했으면 좋겠어요.",
+"보안이 걱정돼서 OTP를 쓰는데 매번 앱을 바꿔야 해서 불편해요. 헷갈려요.",
+"이체 한도 변경 메뉴가 어디 있는지 몰라서 10분 넘게 찾았어요. 결국 고객센터에 전화했습니다. 연락처는 010-1234-5678입니다.",
+"1,200만원 자산 현황이 한눈에 보여서 좋은데 그래프가 조금 더 컸으면 합니다.",
+"수수료 무료 혜택이 언제까지인지 알려주면 좋겠어요.",
+"송금이 멈춰서 3분 넘게 기다렸어요. 처리된 건지 몰라 다시 눌렀다가 중복 송금될까 봐 불안했어요.",
+"이영희씨 명의로 본인인증하는데 생체인증이 등록 안 돼 있다고 하면서 진행이 안 돼서 포기했어요. 계좌는 352-1234-5678-93이에요.",
+"홈 화면 배너 광고 때문에 피곤해요. 줄여주면 좋겠습니다.",
+"친구한테 간편하게 송금돼서 만족해요. 앞으로도 잘 부탁드려요."];
+
+/* ── 유틸 ── */
+const Ic=({d,c='w-4 h-4'})=>html`<svg className=${c} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d=${d}/></svg>`;
+const P={up:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M17 8l-5-5-5 5 M12 3v12',dl:'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4 M7 10l5 5 5-5 M12 15V3',se:'M21 21l-4.3-4.3 M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z',sp:'M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z',br:'M8 3H7a2 2 0 0 0-2 2v5a2 2 0 0 1-2 2 2 2 0 0 1 2 2v5a2 2 0 0 0 2 2h1 M16 21h1a2 2 0 0 0 2-2v-5a2 2 0 0 1 2-2 2 2 0 0 1-2-2V5a2 2 0 0 0-2-2h-1',cp:'M9 9h11v11H9z M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1',x:'M18 6L6 18 M6 6l12 12',sh:'M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z'};
+const Badge=({cls,children,...r})=>html`<span className=${'inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap '+cls} ...${r}>${children}</span>`;
+const Card=({children,className=''})=>html`<div className=${'bg-card border border-line rounded-2xl p-4 sm:p-5 '+className}>${children}</div>`;
+
+function Donut({data}){
+ const tot=data.reduce((a,d)=>a+d.v,0)||1;let off=25;
+ return html`<div className="flex items-center gap-4 flex-wrap">
+  <svg viewBox="0 0 42 42" className="w-36 h-36 shrink-0">
+   <circle cx="21" cy="21" r="15.9155" fill="none" style=${{stroke:'var(--line)'}} strokeWidth="6"/>
+   ${data.map(d=>{const p=d.v/tot*100;const el=html`<circle key=${d.n} cx="21" cy="21" r="15.9155" fill="none" style=${{stroke:d.hex}} strokeWidth="6" strokeDasharray=${p+' '+(100-p)} strokeDashoffset=${off}/>`;off-=p;return el})}
+   <text x="21" y="22.8" textAnchor="middle" fontSize="6.5" fontWeight="700" style=${{fill:'var(--ink)'}}>${tot}</text>
+  </svg>
+  <ul className="space-y-1.5 text-sm">${data.map(d=>html`<li key=${d.n} className="flex items-center gap-2"><span className="w-3 h-3 rounded-full" style=${{background:d.hex}}></span><span>${d.n}</span><span className="text-mut">${d.v}건 (${Math.round(d.v/tot*100)}%)</span></li>`)}</ul>
+ </div>`;
+}
+
+function Hl({t,q}){
+ const i=q?t.indexOf(q):-1;
+ if(i<0)return html`<span>${t}</span>`;
+ return html`<span>${t.slice(0,i)}<mark>${q}</mark>${t.slice(i+q.length)}</span>`;
+}
+
+const toCSV=r=>{const e=v=>'"'+String(v).replace(/"/g,'""')+'"';
+ return '\uFEFF'+[['ID','원문(마스킹)','카테고리','감성','이용 흐름','핵심인용구','수정여부'].join(','),...r.map(x=>[x.id,x.masked,x.category,x.sentiment,SL[x.severity],x.verbatim,x.edited?'수정':''].map(e).join(','))].join('\r\n')};
+const toJSON=r=>JSON.stringify({schema:'ux-voc-tagging/v1',generated_at:new Date().toISOString(),total:r.length,pii_masked:true,records:r.map(x=>({id:x.id,text_masked:x.masked,category:x.category,sentiment:x.sentiment,usage_flow:SL[x.severity],verbatim:x.verbatim,edited:!!x.edited}))},null,2);
+
+const STOP=new Set(['너무','정말','진짜','그리고','그래서','하지만','있는','없는','때문','다시','자꾸','조금','매번','결국','한참','계속','이게','처럼','좋겠','같아','싶어','합니다','했어','있어','없어','돼서','되어','되는','하는','하면','해서','이런','저런','그런','우리','제가','내가','나는','저는','모르','금액','비식별']);
+function words(rs){
+ const m={};
+ rs.forEach(r=>{(r.masked.match(/[가-힣A-Za-z]{2,}/g)||[]).forEach(w=>{
+  w=w.replace(/(했어요|해요|합니다|입니다|이에요|예요|어요|아요|에요|네요|해서|하면|하고|인데|는데|지만|으면|으로|에서|에게|한테|까지|부터|처럼|보다|겠어요|았어요|었어요)$/,'');
+  if(w.length>=3)w=w.replace(/(은|는|이|가|을|를|의|도|에|로|과|와|만)$/,'');
+  if(w.length<2||STOP.has(w))return;
+  m[w]=(m[w]||0)+1})});
+ return Object.entries(m).sort((a,b)=>b[1]-a[1]||a[0].localeCompare(b[0])).slice(0,36);
+}
+const WC=['#6366f1','#0ea5e9','#10b981','#f59e0b','#f43f5e','#64748b'];
+
+function App(){
+ const [rows,setRows]=useState([]);
+ const [fname,setFname]=useState('');
+ const [err,setErr]=useState('');
+ const [info,setInfo]=useState(null);
+ const [drag,setDrag]=useState(false);
+ const [q,setQ]=useState('');const [fc,setFc]=useState('전체');const [fs,setFs]=useState('전체');
+ const [pg,setPg]=useState(0);
+ const [modal,setModal]=useState(null);const [copied,setCopied]=useState(false);
+ const inp=useRef(null);const PER=15;
+
+ const load=(texts,name,srcs)=>{setRows(texts.map((t,i)=>tag(t,i+1,srcs&&srcs[i])));setFname(name);setErr('');setQ('');setFc('전체');setFs('전체');setPg(0)};
+
+ async function readFile(f){
+  try{
+   let txt=await f.text();
+   if(txt.includes('\uFFFD'))txt=new TextDecoder('euc-kr').decode(await f.arrayBuffer());
+   const res=Papa.parse(txt.replace(/^\uFEFF/,''),{header:true,skipEmptyLines:true});
+   const cols=res.meta.fields||[];
+   if(!cols.length||!res.data.length)throw new Error('빈 파일');
+   let tc=cols.find(c=>/(내용|원문|voc|text|content|comment|의견|발화|전사|답변|response)/i.test(c));
+   if(!tc){const avg=c=>res.data.reduce((a,r)=>a+String(r[c]||'').length,0)/res.data.length;tc=cols.slice().sort((a,b)=>avg(b)-avg(a))[0]}
+   const sc=cols.find(c=>c!==tc&&/(채널|source|출처|id|참여자|respondent)/i.test(c));
+   const ok=res.data.filter(r=>String(r[tc]||'').trim());
+   const skipped=res.data.map((r,i)=>String(r[tc]||'').trim()?0:i+2).filter(Boolean);
+   load(ok.map(r=>r[tc]),f.name,sc?ok.map(r=>r[sc]):null);
+   setInfo({total:res.data.length,used:ok.length,col:tc,header:cols,skipped});
+  }catch(e){setErr('CSV를 읽지 못했어요. 헤더가 있는 CSV인지 확인해 주세요.')}
+ }
+
+ const stats=useMemo(()=>{
+  const n=rows.length;
+  const hi=rows.filter(r=>r.severity==='High').length;
+  const cnt={};rows.forEach(r=>cnt[r.category]=(cnt[r.category]||0)+1);
+  const cm={};rows.forEach(r=>{const o=cm[r.category]||(cm[r.category]={'부정':0,'긍정':0,'중립':0});o[r.sentiment]++});
+  const neg={};rows.filter(r=>r.sentiment==='부정'&&r.category!=='기타').forEach(r=>neg[r.category]=(neg[r.category]||0)+1);
+  const top=Object.entries(neg).sort((a,b)=>b[1]-a[1])[0];
+  const sev=['High','Mid','Low'].map(k=>({n:SL[k],v:rows.filter(r=>r.severity===k).length,hex:SEV[k].hex}));
+  const sent=['부정','중립','긍정'].map(k=>({n:k,v:rows.filter(r=>r.sentiment===k).length,hex:SENT[k].hex}));
+  return {n,hi,cnt,cm,top,sev,sent};
+ },[rows]);
+
+ const view=rows.filter(r=>(fc==='전체'||r.category===fc)&&(fs==='전체'||r.severity===fs)&&(!q||(r.masked+r.category).includes(q)));
+ const pages=Math.max(1,Math.ceil(view.length/PER));
+ const slice=view.slice(pg*PER,(pg+1)*PER);
+ const maxC=Math.max(1,...Object.values(stats.cnt||{}));
+ const upd=(id,p)=>setRows(rs=>rs.map(r=>{if(r.id!==id)return r;const n={...r,...p,edited:true};if(p.severity)n.sentiment=p.severity!=='Low'?'부정':(has(n.masked,POS)?'긍정':'중립');return n}));
+
+ const doCopy=async()=>{
+  try{await navigator.clipboard.writeText(modal.content)}catch(e){const t=document.getElementById('exp');t.select();document.execCommand('copy')}
+  setCopied(true);setTimeout(()=>setCopied(false),1500)};
+ const doDl=()=>{try{const b=new Blob([modal.content],{type:modal.mime});const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=modal.name;document.body.appendChild(a);a.click();a.remove()}catch(e){}};
+
+ const sel='bg-card border border-line rounded-lg px-3 py-2 text-sm';
+ const btn='inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-semibold border border-line bg-card hover:opacity-80';
+ const btnY='inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-bold bg-[#FEE500] text-[#191919] hover:brightness-95';
+
+ return html`<div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 space-y-5">
+  <header className="flex flex-wrap items-center justify-between gap-3">
+   <div><div className="flex items-center gap-2"><span className="w-8 h-8 rounded-lg bg-[#FEE500] text-[#191919] flex items-center justify-center"><${Ic} d=${P.sp}/></span><h1 className="text-xl sm:text-2xl font-extrabold">UX 리서치 태깅 대시보드</h1></div>
+   <p className="text-sm text-mut mt-1">VOC·인터뷰 CSV를 올리면 마스킹 → 분류 → 이용 흐름 태깅까지 자동으로 정리해요.</p></div>
+   <div className="flex gap-2 flex-wrap">
+    <button className=${btn} onClick=${()=>load(SAMPLE,'샘플 리서치 데이터')}><${Ic} d=${P.sp}/>샘플 불러오기</button>
+    <button className=${btnY} onClick=${()=>inp.current.click()}><${Ic} d=${P.up}/>CSV 업로드</button>
+    <input ref=${inp} type="file" accept=".csv,text/csv" className="hidden" onChange=${e=>e.target.files[0]&&readFile(e.target.files[0])}/>
+   </div>
+  </header>
+
+  ${err&&html`<div className="text-sm rounded-lg px-4 py-3 bg-red-500/15 text-red-700 dark:text-red-300">${err}</div>`}
+  ${info&&rows.length>0&&html`<div className="text-xs rounded-lg px-4 py-3 bg-sky-500/10 text-mut leading-relaxed">읽기 결과: 원문 컬럼 <b className="text-ink">${info.col}</b> 기준, 헤더 아래 ${info.total}행 중 <b className="text-ink">${info.used}건</b> 분석${info.skipped.length?' · 원문이 비어 제외된 행(파일 기준 줄 번호): '+info.skipped.join(', '):''}<br/>헤더로 읽은 첫 줄: ${info.header.join(' / ').slice(0,100)}</div>`}
+
+  ${!rows.length&&html`<div onDragOver=${e=>{e.preventDefault();setDrag(true)}} onDragLeave=${()=>setDrag(false)} onDrop=${e=>{e.preventDefault();setDrag(false);e.dataTransfer.files[0]&&readFile(e.dataTransfer.files[0])}}
+    className=${'border-2 border-dashed rounded-2xl p-10 sm:p-16 text-center '+(drag?'border-[#FEE500] bg-[#FEE500]/10':'border-line bg-card')}>
+    <div className="mx-auto w-12 h-12 rounded-full bg-[#FEE500] text-[#191919] flex items-center justify-center mb-4"><${Ic} d=${P.up} c="w-6 h-6"/></div>
+    <p className="font-bold text-lg">CSV 파일을 여기로 끌어다 놓으세요</p>
+    <p className="text-sm text-mut mt-2">원문 컬럼(내용·원문·VOC 등)은 자동으로 찾아요. UTF-8, CP949 모두 지원합니다.</p>
+    <p className="text-sm text-mut mt-1">파일이 없다면 위의 <b>샘플 불러오기</b>로 바로 체험해 보세요.</p></div>`}
+
+  ${rows.length>0&&html`<div className="space-y-5">
+   <div className="flex items-center gap-2 text-sm text-mut"><${Ic} d=${P.sh}/><span><b className="text-ink">${fname}</b> · 이름·계좌·연락처·고액 금액을 마스킹한 상태예요</span></div>
+
+   <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+    <${Card}><p className="text-sm text-mut">총 데이터 건수</p><p className="text-3xl font-extrabold mt-1">${stats.n}<span className="text-base font-semibold text-mut ml-1">건</span></p><//>
+    <${Card}><p className="text-sm text-mut mb-3">감성 비율</p><${Donut} data=${stats.sent}/><//>
+    <${Card}><p className="text-sm text-mut mb-3">이용 흐름 비율</p><${Donut} data=${stats.sev}/><//>
+   </div>
+
+   <div>
+    <${Card}><h2 className="font-bold mb-2">카테고리별 감성 비율</h2>
+     <div className="flex gap-3 text-xs text-mut mb-3">${['부정','긍정','중립'].map(s=>html`<span key=${s} className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm" style=${{background:SENT[s].hex}}></span>${s}</span>`)}</div>
+     <div className="space-y-2.5">${CATS.map(c=>html`<div key=${c.k} className="w-full flex items-center gap-3">
+      <span className="w-24 text-sm shrink-0">${c.k}</span>
+      <span className="flex-1 h-6 rounded-md flex overflow-hidden" style=${{background:'var(--line)'}}>${['부정','긍정','중립'].map(s=>{const f=((stats.cm[c.k]||{})[s]||0)/(stats.cnt[c.k]||1)*100;return html`<span key=${s} title=${s+' '+Math.round(f)+'%'} className="flex items-center justify-center text-[11px] font-bold text-white h-6" style=${{width:f+'%',background:SENT[s].hex}}>${f>=12?Math.round(f)+'%':''}</span>`})}</span>
+      <span className="w-12 text-right text-sm font-semibold">${stats.cnt[c.k]||0}건</span></div>`)}</div><//>
+    
+   </div>
+
+   
+
+   <${Card}>
+    <div className="flex flex-wrap items-center gap-2 mb-4">
+     <h2 className="font-bold mr-auto">태깅 결과 <span className="text-sm font-normal text-mut">${view.length}건</span></h2>
+     <div className="relative"><span className="absolute left-2.5 top-2.5 text-mut"><${Ic} d=${P.se}/></span><input value=${q} onInput=${e=>{setQ(e.target.value);setPg(0)}} placeholder="검색" className=${sel+' pl-8 w-40 bg-transparent'}/></div>
+     <select value=${fc} onChange=${e=>{setFc(e.target.value);setPg(0)}} className=${sel}><option>전체</option>${CATS.map(c=>html`<option key=${c.k}>${c.k}</option>`)}</select>
+     <select value=${fs} onChange=${e=>{setFs(e.target.value);setPg(0)}} className=${sel}><option value="전체">전체 이용 흐름</option><option value="High">이탈</option><option value="Mid">우회</option><option value="Low">지장 없음</option></select>
+     <button className=${btn} onClick=${()=>setModal({title:'가공된 CSV (UTF-8 BOM)',content:toCSV(view),name:'ux_tagged.csv',mime:'text/csv;charset=utf-8'})}><${Ic} d=${P.dl}/>CSV (${view.length}건)</button>
+     <button className=${btn} onClick=${()=>setModal({title:'표준 JSON',content:toJSON(view),name:'ux_tagged.json',mime:'application/json'})}><${Ic} d=${P.br}/>JSON (${view.length}건)</button>
+    </div>
+    <div className="overflow-x-auto -mx-1"><table className="w-full text-sm min-w-[720px]">
+     <thead><tr className="text-left text-mut border-b border-line"><th className="py-2 px-1 w-10">#</th><th className="py-2 px-1">원문 (마스킹 · 핵심 인용구 강조)</th><th className="py-2 px-1">카테고리</th><th className="py-2 px-1">감성</th><th className="py-2 px-1">이용 흐름</th></tr></thead>
+     <tbody>${slice.map(r=>html`<tr key=${r.id} className="border-b border-line/60 align-top">
+      <td className="py-3 px-1 text-mut">${r.id}</td>
+      <td className="py-3 px-1 leading-relaxed"><${Hl} t=${r.masked} q=${r.verbatim}/>${r.source&&html`<span className="block text-xs text-mut mt-1">${r.source}</span>`}</td>
+      <td className="py-3 px-1"><select value=${r.category} onChange=${e=>upd(r.id,{category:e.target.value})} className=${'rounded-full text-xs font-semibold px-2 py-1 '+CAT[r.category].cls}>${CATS.map(c=>html`<option key=${c.k}>${c.k}</option>`)}</select></td>
+      <td className="py-3 px-1"><${Badge} cls=${SENT[r.sentiment].cls}>${r.sentiment}<//></td>
+      <td className="py-3 px-1"><select value=${r.severity} onChange=${e=>upd(r.id,{severity:e.target.value})} className=${'rounded-full text-xs font-semibold px-2 py-1 '+SEV[r.severity].cls}><option value="High">이탈</option><option value="Mid">우회</option><option value="Low">지장 없음</option></select>${r.edited&&html`<span className="block text-[10px] text-mut mt-1">✎ 수정됨</span>`}</td></tr>`)}
+      ${!slice.length&&html`<tr><td colSpan="5" className="py-10 text-center text-mut">조건에 맞는 데이터가 없어요.</td></tr>`}</tbody></table></div>
+    <div className="flex items-center justify-between mt-4 text-sm">
+     <span className="text-mut">${pg+1} / ${pages} 페이지</span>
+     <div className="flex gap-2"><button className=${btn} disabled=${pg===0} onClick=${()=>setPg(pg-1)}>이전</button><button className=${btn} disabled=${pg>=pages-1} onClick=${()=>setPg(pg+1)}>다음</button></div>
+    </div>
+   <//>
+   <div className="text-xs text-mut leading-relaxed space-y-1 border-t border-line pt-4">
+    <p><b>이용 흐름이란?</b> 불편 때문에 사용자의 이용이 얼마나 끊겼는지를 나타내요. 이탈: 송금·결제를 끝내지 못하고 중단했거나 금전적 불안이 큰 경우 / 우회: 헷갈리거나 머뭇거렸지만 다른 방법으로 해결한 경우 / 지장 없음: 사용에 지장은 없고 단순 건의나 만족 의견인 경우.</p>
+    <p><b>감성 비율:</b> 이탈·우회에 해당하면 ‘부정’, 지장 없음 중 칭찬 표현이 있으면 ‘긍정’, 나머지는 ‘중립’으로 분류해요. 카테고리별 막대는 그 카테고리 안에서 부정·긍정·중립이 차지하는 비율(%)이고, 막대 끝의 건수는 해당 카테고리의 전체 의견 수예요.</p>
+    
+    <p><b>자동 분류의 한계:</b> 키워드 규칙 기반이라 틀릴 수 있어요. 표에서 카테고리·이용 흐름을 직접 고칠 수 있고, 수정한 건은 내보내기에 ‘수정’으로 표시됩니다. CSV·JSON은 현재 필터에 걸린 건만 내보내요. 이름 마스킹은 ‘님·씨·고객’ 앞 3글자 패턴만 잡습니다.</p></div>
+  </div>`}
+
+  ${modal&&html`<div className="fixed inset-0 z-50 flex items-center justify-center p-4" style=${{background:'rgba(0,0,0,.55)'}} onClick=${()=>setModal(null)}>
+   <div className="bg-card border border-line rounded-2xl w-full max-w-2xl p-5" onClick=${e=>e.stopPropagation()}>
+    <div className="flex items-center justify-between mb-3"><h3 className="font-bold">${modal.title}</h3><button onClick=${()=>setModal(null)} className="text-mut"><${Ic} d=${P.x}/></button></div>
+    <textarea id="exp" readOnly value=${modal.content} className="w-full h-64 rounded-lg border border-line bg-transparent p-3 text-xs font-mono"></textarea>
+    <div className="flex gap-2 justify-end mt-3"><button className=${btn} onClick=${doCopy}><${Ic} d=${P.cp}/>${copied?'복사됨!':'복사'}</button><button className=${btnY} onClick=${doDl}><${Ic} d=${P.dl}/>파일로 저장</button></div>
+    <p className="text-xs text-mut mt-2">저장이 막히는 환경에서는 복사 후 메모장·엑셀에 붙여 넣어 주세요.</p>
+   </div></div>`}
+ </div>`;
+}
+ReactDOM.createRoot(document.getElementById('root')).render(html`<${App}/>`);
+</script>
+</body>
+</html>
